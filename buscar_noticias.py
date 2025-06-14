@@ -3,7 +3,7 @@ import smtplib
 from email.mime.text import MIMEText
 
 # Configuração da API de notícias (NewsAPI)
-API_KEY = "SUA_API_KEY"
+API_KEY = "4c72971b479b4b3781995bbde93ae5cc"
 URL = f"https://newsapi.org/v2/everything?q=inteligencia-artificial&from=2025-06-06&sortBy=popularity&apiKey={API_KEY}"
 
 # Obtendo as notícias
@@ -14,7 +14,7 @@ noticias = "\n".join([f"{i+1}. {article['title']} - {article['source']['name']}\
 # Configuração do e-mail
 EMAIL_REMETENTE = "seuemail@gmail.com"
 EMAIL_SENHA = "sua_senha_de_app"
-EMAIL_DESTINATARIO = "destinatario@gmail.com"
+EMAIL_DESTINATARIO = "jesue@ifsc.edu.br"
 
 # Criando e enviando o e-mail
 mensagem = MIMEText(noticias)
