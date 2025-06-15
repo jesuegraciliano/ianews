@@ -60,7 +60,7 @@ EMAIL_TO = os.getenv("EMAIL_TO", ENV["EMAIL_FROM"])
 # ──────────── 1. Coleta de manchetes NewsAPI ────────────
 HEADERS = {"User-Agent": "IA-Agents-Pipeline/1.0"}
 QUERY = '"Artificial Intelligence"'
-MAX_ARTIGOS = 10
+MAX_ARTIGOS = 3
 
 def fetch_ai_headlines() -> List[Dict]:
     today = datetime.now(timezone.utc).date()
