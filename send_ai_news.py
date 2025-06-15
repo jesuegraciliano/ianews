@@ -34,7 +34,7 @@ EMAIL_TO: str = os.getenv("EMAIL_TO", EMAIL_FROM or "")
 MAX_ARTIGOS: int = int(os.getenv("MAX_ARTIGOS", "10"))
 
 QUERY = (
-    '"inteligência artificial" OR "IA" OR "AI"'
+    '"inteligência artificial" OR "Articial Intelligence" OR "AI"'
 )  # NewsAPI usa OR maiúsculo
 
 UA = "AI-News-Agent/1.3 (+https://github.com/jesuegraciliano)"
