@@ -1,7 +1,7 @@
 name: Buscar Notícias e Enviar E-mail
 on:
   schedule:
-    - cron: '0 22 * * *' # Executa todos os dias às 22h
+    - cron: '0 12 * * *' # Executa todos os dias às 22h
 
 jobs:
   get_news:
