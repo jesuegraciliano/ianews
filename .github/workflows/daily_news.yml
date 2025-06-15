@@ -2,10 +2,8 @@ name: Daily AI News
 
 on:
   schedule:
-    # 08:00 BRT (UTC−3) = 11:00 UTC
-    - cron: '0 11 * * *'
-    # 18:40 BRT (UTC−3) = 21:40 UTC
-    - cron: '40 21 * * *'
+    - cron: '0 11 * * *'     # 08:00 BRT
+    - cron: '40 21 * * *'    # 18:40 BRT
   workflow_dispatch:
 
 jobs:
@@ -20,34 +18,20 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Install dependencies
+      - name: Install basic dependencies
         run: pip install requests openai
 
-      - name: Run daily news agent
+      - name: Install full dependencies (CrewAI etc.)
+        run: |
+          pip install crewai==0.28.8 crewai_tools==0.1.6 \
+                      langchain_community==0.0.29 openai serperdev requests
+
+      - name: Run AI news pipeline
         env:
           NEWS_API_KEY:   ${{ secrets.NEWS_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
           EMAIL_FROM:     ${{ secrets.EMAIL_FROM }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO:       ${{ secrets.EMAIL_TO }}
-        run: python ai_news_agent_openai.py
-
-
-        - name: Install deps
-  run: |
-    pip install crewai==0.28.8 crewai_tools==0.1.6 langchain_community==0.0.29 openai serperdev requests
-- name: Run AI pipeline
-  env:
-    NEWS_API_KEY:   ${{ secrets.NEWS_API_KEY }}
-    OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
-    EMAIL_FROM:     ${{ secrets.EMAIL_FROM }}
-    EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
-    EMAIL_TO:       ${{ secrets.EMAIL_TO }}
-  run: python ai_news_agents_email_pipeline.py
-
-
-
-
-
-        
+        run: python ai_news_agents_email_pipeline.py
