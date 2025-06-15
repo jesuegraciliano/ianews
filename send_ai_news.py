@@ -1,23 +1,30 @@
 #!/usr/bin/env python3
 """
-ai_news_agent_openai.py (Versão focada)
-======================================
+ai_news_agents_email_pipeline.py
+================================
 
-Busca *exclusivamente* notícias cujo conteúdo mencione explicitamente
-“Artificial Intelligence” (expressão exata, em inglês). As demais
-funcionalidades permanecem:
-  • Seleção dos 10 artigos mais recentes (últimos 7 dias) via NewsAPI.
-  • Uso da OpenAI API para traduzir título e produzir resumo de 10 linhas em
-    português.
-  • Envio por e-mail com corpo texto e HTML.
+Script único que:
+  1. Busca até 10 manchetes recentes (7 dias) sobre "Artificial Intelligence"
+     na NewsAPI.
+  2. Usa agentes CrewAI (Planejador, Redator, Editor) com gpt‑4o‑mini e
+     ferramentas Serper.dev + ScrapeWebsite para contextualizar e revisar as
+     informações.
+  3. Gera um artigo final em português do Brasil, pronto para publicação
+     (markdown).
+  4. Envia o artigo por e‑mail via Gmail.
 
-Segredos obrigatórios (GitHub ▸ Settings ▸ Secrets):
-  NEWS_API_KEY   Chave da NewsAPI.org
-  OPENAI_API_KEY Chave da OpenAI
-  EMAIL_FROM     Gmail remetente
-  EMAIL_PASSWORD Senha de app Gmail
+Segredos/variáveis de ambiente necessários:
+  NEWS_API_KEY      Chave NewsAPI.org
+  OPENAI_API_KEY    Chave OpenAI
+  SERPER_API_KEY    Chave Serper.dev
+  EMAIL_FROM        Gmail remetente
+  EMAIL_PASSWORD    Senha de app Gmail (2FA)
 Opcional:
-  EMAIL_TO       Destinatário (default = EMAIL_FROM)
+  EMAIL_TO          Destinatário (default = EMAIL_FROM)
+
+Dependências:
+  pip install crewai==0.28.8 crewai_tools==0.1.6 langchain_community==0.0.29 \
+              openai serperdev requests
 """
 from __future__ import annotations
 
@@ -27,124 +34,137 @@ import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import List
+from typing import List, Dict
 
 import requests
-import openai
+from crewai_tools import SerperDevTool, ScrapeWebsiteTool
+from crewai import Agent, Task, Crew
+from langchain_openai import ChatOpenAI
 
-# ──────────── Variáveis de ambiente ────────────
-NEWS_API_KEY   = os.getenv("NEWS_API_KEY")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-EMAIL_FROM     = os.getenv("EMAIL_FROM")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
-EMAIL_TO       = os.getenv("EMAIL_TO", EMAIL_FROM or "")
-MAX_ARTIGOS    = 10
-
-missing = [k for k, v in {
-    "NEWS_API_KEY": NEWS_API_KEY,
-    "OPENAI_API_KEY": OPENAI_API_KEY,
-    "EMAIL_FROM": EMAIL_FROM,
-    "EMAIL_PASSWORD": EMAIL_PASSWORD,
-}.items() if not v]
+# ──────────── Validação de segredos ────────────
+ENV = {
+    "NEWS_API_KEY": os.getenv("NEWS_API_KEY"),
+    "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
+    "SERPER_API_KEY": os.getenv("SERPER_API_KEY"),
+    "EMAIL_FROM": os.getenv("EMAIL_FROM"),
+    "EMAIL_PASSWORD": os.getenv("EMAIL_PASSWORD"),
+}
+missing = [k for k, v in ENV.items() if not v]
 if missing:
-    sys.stderr.write("Faltam variáveis: " + ", ".join(missing) + "\n")
+    sys.stderr.write("Variáveis ausentes: " + ", ".join(missing) + "\n")
     sys.exit(1)
 
-openai.api_key = OPENAI_API_KEY
-MODEL = "gpt-3.5-turbo-0125"
-HEADERS = {"User-Agent": "AI-News-Agent/3.1 (+https://github.com/jesuegraciliano)"}
-# Query restrita à expressão exata "Artificial Intelligence" em inglês
+# Email destino
+EMAIL_TO = os.getenv("EMAIL_TO", ENV["EMAIL_FROM"])
+
+# ──────────── 1. Coleta de manchetes NewsAPI ────────────
+HEADERS = {"User-Agent": "IA-Agents-Pipeline/1.0"}
 QUERY = '"Artificial Intelligence"'
+MAX_ARTIGOS = 10
 
-# ──────────── Funções ────────────
-
-def fetch_articles() -> List[dict]:
+def fetch_ai_headlines() -> List[Dict]:
     today = datetime.now(timezone.utc).date()
     week_ago = today - timedelta(days=7)
     url = (
         "https://newsapi.org/v2/everything?q=" + QUERY +
-        f"&from={week_ago.isoformat()}&sortBy=publishedAt&pageSize=100&language=en&apiKey={NEWS_API_KEY}"
+        f"&from={week_ago.isoformat()}&sortBy=publishedAt&language=en&"
+        f"pageSize=100&apiKey={ENV['NEWS_API_KEY']}"
     )
     data = requests.get(url, headers=HEADERS, timeout=30).json()
     if data.get("status") != "ok":
         raise RuntimeError(data.get("message", "Erro NewsAPI"))
-
-    items: List[dict] = []
+    headlines = []
     for art in data.get("articles", []):
-        if len(items) == MAX_ARTIGOS:
+        if len(headlines) == MAX_ARTIGOS:
             break
         if art.get("title") and art.get("url"):
-            items.append({
-                "title": art["title"],
-                "description": art.get("description", ""),
-                "url": art["url"],
-                "source": art.get("source", {}).get("name", "")
-            })
-    return items
+            headlines.append({"title": art["title"], "url": art["url"]})
+    return headlines
 
+# ──────────── 2. Configuração dos agentes CrewAI ────────────
+llm = ChatOpenAI(model="gpt-4o-mini", api_key=ENV["OPENAI_API_KEY"])
+search_tool = SerperDevTool()
+scrape_tool = ScrapeWebsiteTool()
 
-def ai_summary(title: str, desc: str) -> dict:
-    prompt = (
-        "Traduza o título abaixo para o português (≤120 caracteres) e elabore um resumo em 10 linhas, "
-        "cada linha iniciada com •, também em português.\n\n"
-        f"TÍTULO ORIGINAL: {title}\n"
-        f"DESCRIÇÃO ORIGINAL: {desc}\n"
+planejador = Agent(
+    role="Planejador de Conteúdo",
+    goal="Criar um esboço conciso sobre Inteligência Artificial baseado nas manchetes fornecidas",
+    backstory="Você prepara a pauta para um artigo semanal sobre IA.",
+    verbose=False,
+    tools=[search_tool, scrape_tool],
+    llm=llm,
+)
+
+redator = Agent(
+    role="Redator de Conteúdo",
+    goal="Escrever artigo em português, objetivo e interessante, seguindo o esboço do planejador",
+    backstory="Você transforma o esboço em um artigo markdown.",
+    verbose=False,
+    tools=[search_tool, scrape_tool],
+    llm=llm,
+)
+
+editor = Agent(
+    role="Editor",
+    goal="Garantir clareza, correção gramatical e foco exclusivo em IA",
+    backstory="Você revisa e finaliza o texto.",
+    verbose=False,
+    tools=[],
+    llm=llm,
+)
+
+# ──────────── 3. Tarefas ────────────
+planejamento_task = Task(
+    description="Crie um esboço detalhado (markdown) para um artigo sobre IA usando as manchetes fornecidas.",
+    expected_output="Esboço markdown com seções.",
+    agent=planejador,
+)
+
+escrita_task = Task(
+    description="Escreva o artigo (markdown) com introdução, 3 seções e conclusão, 3-4 parágrafos cada.",
+    expected_output="Artigo completo markdown.",
+    agent=redator,
+)
+
+edicao_task = Task(
+    description="Revise o artigo garantindo foco em IA, corrigindo erros.",
+    expected_output="Artigo final markdown revisado.",
+    agent=editor,
+)
+
+# ──────────── 4. Execução CrewAI ────────────
+def generate_article(headlines: List[Dict]) -> str:
+    context = "\n".join([f"- {h['title']} ({h['url']})" for h in headlines]) or "Nenhuma manchete"
+    crew = Crew(
+        agents=[planejador, redator, editor],
+        tasks=[planejamento_task, escrita_task, edicao_task],
+        verbose=2,
     )
-    chat = openai.chat.completions.create(
-        model=MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.7,
-    )
-    content = chat.choices[0].message.content.strip()
-    linhas = [ln.strip(" •-") for ln in content.split("\n") if ln.strip()]
-    titulo_pt = linhas[0]
-    resumo_list = linhas[1:11]
-    resumo_txt = "\n".join(resumo_list)
-    resumo_html = "<br>".join(resumo_list)
-    return {"titulo": titulo_pt, "resumo_txt": resumo_txt, "resumo_html": resumo_html}
+    result = crew.kickoff(inputs={"tópico": "Artificial Intelligence", "manchetes": context})
+    return result
 
+# ──────────── 5. Envio de e‑mail ────────────
 
-def build_email(items: List[dict]) -> MIMEMultipart:
-    subject = f"AI Global (Últimos 7 dias) — {datetime.now().strftime('%d/%m/%Y')}"
+def send_email(markdown_body: str) -> None:
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = EMAIL_FROM
+    msg["Subject"] = f"Artigo Semanal sobre IA — {datetime.now().strftime('%d/%m/%Y')}"
+    msg["From"] = ENV["EMAIL_FROM"]
     msg["To"] = EMAIL_TO
 
-    txt_blocks: List[str] = []
-    html_blocks: List[str] = ["<h1>📰 Artificial Intelligence — Destaques</h1><ol>"]
+    msg.attach(MIMEText(markdown_body, "plain", "utf-8"))
+    msg.attach(MIMEText(markdown_body.replace("\n", "<br>"), "html", "utf-8"))
 
-    for it in items:
-        txt_blocks.append(f"{it['titulo']}\n{it['resumo_txt']}\nLink: {it['url']}\n")
-        html_blocks.append(
-            f"<li><strong>{it['titulo']}</strong><br>{it['resumo_html']}<br>"
-            f"<a href='{it['url']}'>{it['url']}</a></li>"
-        )
-
-    html_blocks.append("</ol><p style='font-size:0.8em;color:#666'>Enviado via GitHub Actions + OpenAI API.</p>")
-
-    msg.attach(MIMEText("\n".join(txt_blocks), "plain", "utf-8"))
-    msg.attach(MIMEText("".join(html_blocks), "html", "utf-8"))
-    return msg
-
-
-def send(msg: MIMEMultipart) -> None:
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(EMAIL_FROM, EMAIL_PASSWORD)
-        smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+        smtp.login(ENV["EMAIL_FROM"], ENV["EMAIL_PASSWORD"])
+        smtp.sendmail(ENV["EMAIL_FROM"], [EMAIL_TO], msg.as_string())
 
 # ──────────── Main ────────────
-
-def main() -> None:
-    try:
-        arts = fetch_articles()
-        enriched = [{**art, **ai_summary(art['title'], art['description'])} for art in arts]
-        email_msg = build_email(enriched)
-        send(email_msg)
-        print("E-mail enviado com sucesso.")
-    except Exception as exc:
-        sys.stderr.write(f"Erro: {exc}\n")
-        sys.exit(1)
-
 if __name__ == "__main__":
-    main()
+    try:
+        manchetes = fetch_ai_headlines()
+        article_md = generate_article(manchetes)
+        send_email(article_md)
+        print("Processo concluído: e‑mail enviado.")
+    except Exception as err:
+        sys.stderr.write(f"Falha no pipeline: {err}\n")
+        sys.exit(1)
