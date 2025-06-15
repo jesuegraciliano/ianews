@@ -2,8 +2,10 @@ name: Daily AI News
 
 on:
   schedule:
-    - cron: '0 11 * * *'   # 08h00 BRT (11h00 UTC)
-    - cron: '40 20 * * *'  # 17h40 BRT (20h40 UTC)
+    # 08:00 BRT (UTC−3) = 11:00 UTC
+    - cron: '0 11 * * *'
+    # 17:40 BRT (UTC−3) = 20:40 UTC
+    - cron: '40 20 * * *'
   workflow_dispatch:
 
 jobs:
@@ -11,8 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Configure Python
         uses: actions/setup-python@v5
@@ -20,7 +21,8 @@ jobs:
           python-version: '3.x'
 
       - name: Install dependencies
-        run: pip install requests
+        run: |
+          pip install requests googletrans==4.0.0-rc1
 
       - name: Run daily news agent
         env:
@@ -28,5 +30,4 @@ jobs:
           EMAIL_FROM:   ${{ secrets.EMAIL_FROM }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO:     ${{ secrets.EMAIL_TO }}
-        run: |
-          python send_ai_news.py
+        run: python send_ai_news.py
