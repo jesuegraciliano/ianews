@@ -2,8 +2,8 @@ name: Daily AI News
 
 on:
   schedule:
-    # Executa todos os dias às 15:15 UTC (12:15 BRT)
-    - cron: '15 15 * * *'
+    # Executa todos os dias às 15:25 UTC (12:15 BRT)
+    - cron: '15 25 * * *'
   workflow_dispatch:
 
 jobs:
