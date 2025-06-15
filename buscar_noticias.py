@@ -12,9 +12,9 @@ data = response.json()
 noticias = "\n".join([f"{i+1}. {article['title']} - {article['source']['name']}\nLink: {article['url']}\n" for i, article in enumerate(data["articles"][:10])])
 
 # Configuração do e-mail
-EMAIL_REMETENTE = "seuemail@gmail.com"
-EMAIL_SENHA = "sua_senha_de_app"
-EMAIL_DESTINATARIO = "jesue@ifsc.edu.br"
+EMAIL_REMETENTE = "jesuegraci@gmail.com"
+EMAIL_SENHA = "jhej bqfn swtq psda"
+EMAIL_DESTINATARIO = "jesuegraci@gmail.com"
 
 # Criando e enviando o e-mail
 mensagem = MIMEText(noticias)
