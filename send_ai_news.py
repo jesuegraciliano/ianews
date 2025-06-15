@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """
-Agente de notícias globais de IA (manchetes + resumo traduzido)
-==============================================================
+AI News Agent — OpenAI Summaries & Translation
+=============================================
 
-* Busca 10 artigos sobre IA publicados nos últimos 7 dias (NewsAPI).
-* Traduz título **e** descrição para português com `googletrans‑fixed`.
-* Recorta as 10 primeiras linhas do texto traduzido como resumo.
-* Envia e‑mail em texto simples e HTML.
-* Pensado para rodar em GitHub Actions duas vezes por dia (08h00 e 17h40 BRT).
+* Busca 10 artigos sobre IA publicados nos últimos 7 dias via NewsAPI.
+* Usa a OpenAI API (gpt-3.5‑turbo) para gerar, em português:
+  - Um título de até 120 caracteres.
+  - Um resumo descritivo de **10 linhas** (aprox. 120–150 palavras).
+* Entrega e‑mail em texto simples e HTML.
+* Projetado para rodar duas vezes ao dia (08 h00 & 17 h40 BRT) no GitHub Actions.
 
-Segredos exigidos no repositório
---------------------------------
-NEWS_API_KEY   chave da NewsAPI.org 
-EMAIL_FROM     Gmail remetente (mesmo usado para login) 
-EMAIL_PASSWORD senha de aplicativo do Gmail (2FA) 
-EMAIL_TO       (opcional) destinatário; default = EMAIL_FROM
+Variáveis/Segredos necessários (definidos em *Settings ▸ Secrets and variables ▸ Actions*):
+  NEWS_API_KEY     Chave pessoal da NewsAPI.org.
+  OPENAI_API_KEY   Chave da conta OpenAI.
+  EMAIL_FROM       Gmail remetente.
+  EMAIL_PASSWORD   Senha de app do Gmail.
+Opcional:
+  EMAIL_TO         Destinatário; se ausente, usa EMAIL_FROM.
 """
 from __future__ import annotations
 
 import os
-import re
 import smtplib
 import sys
 from datetime import datetime, timedelta, timezone
@@ -28,109 +29,124 @@ from email.mime.text import MIMEText
 from typing import List
 
 import requests
-from googletrans_fixed import Translator
+import openai
 
-# ───── Variáveis de ambiente ─────
+# ───────── Configuração de ambiente ─────────
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 EMAIL_FROM = os.getenv("EMAIL_FROM")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
 EMAIL_TO = os.getenv("EMAIL_TO", EMAIL_FROM or "")
 MAX_ARTIGOS = 10
 
-if not all([NEWS_API_KEY, EMAIL_FROM, EMAIL_PASSWORD]):
-    sys.stderr.write("Variáveis obrigatórias ausentes.\n")
+missing = [k for k, v in {
+    "NEWS_API_KEY": NEWS_API_KEY,
+    "OPENAI_API_KEY": OPENAI_API_KEY,
+    "EMAIL_FROM": EMAIL_FROM,
+    "EMAIL_PASSWORD": EMAIL_PASSWORD,
+}.items() if not v]
+if missing:
+    sys.stderr.write("Variáveis obrigatórias faltando: " + ", ".join(missing) + "\n")
     sys.exit(1)
 
+openai.api_key = OPENAI_API_KEY
+MODEL = "gpt-3.5-turbo-0125"
+
+HEADERS = {"User-Agent": "AI-News-Agent/3.0 (+https://github.com/jesuegraciliano)"}
 QUERY = '"inteligência artificial" OR "IA" OR "AI"'
-HEADERS = {"User-Agent": "AI-News-Agent/2.3 (+https://github.com/jesuegraciliano)"}
-translator = Translator()
 
-# ───── Funções auxiliares ─────
+# ───────── Funções utilitárias ─────────
 
-def _split_sentences(texto: str) -> List[str]:
-    texto = re.sub(r"\s+", " ", texto.strip())
-    return re.split(r"(?<=[.!?]) +", texto)
-
-
-def _translate(texto: str) -> str:
-    try:
-        return translator.translate(texto, dest="pt").text
-    except Exception:
-        return texto  # devolve original se falhar
-
-
-def buscar_artigos() -> List[dict]:
-    hoje = datetime.now(timezone.utc).date()
-    semana = hoje - timedelta(days=7)
+def fetch_articles() -> List[dict]:
+    today = datetime.now(timezone.utc).date()
+    week_ago = today - timedelta(days=7)
     url = (
-        "https://newsapi.org/v2/everything?q=" + QUERY +
-        f"&from={semana.isoformat()}&sortBy=publishedAt&pageSize=100&apiKey={NEWS_API_KEY}"
+        "https://newsapi.org/v2/everything?"
+        f"q={QUERY}&from={week_ago.isoformat()}&sortBy=publishedAt&"
+        f"pageSize=100&apiKey={NEWS_API_KEY}"
     )
-    dados = requests.get(url, headers=HEADERS, timeout=30).json()
-    if dados.get("status") != "ok":
-        raise RuntimeError(dados.get("message", "Erro NewsAPI"))
+    data = requests.get(url, headers=HEADERS, timeout=30).json()
+    if data.get("status") != "ok":
+        raise RuntimeError(data.get("message", "Erro NewsAPI"))
 
-    artigos: List[dict] = []
-    for art in dados.get("articles", []):
-        if len(artigos) == MAX_ARTIGOS:
+    arts: List[dict] = []
+    for art in data.get("articles", []):
+        if len(arts) == MAX_ARTIGOS:
             break
-        titulo = art.get("title")
-        desc = art.get("description") or ""
-        link = art.get("url")
-        fonte = art.get("source", {}).get("name", "")
-        if titulo and link:
-            artigos.append({"titulo": titulo, "desc": desc, "link": link, "fonte": fonte})
-    return artigos
+        if art.get("title") and art.get("url"):
+            arts.append({
+                "title": art["title"],
+                "description": art.get("description", ""),
+                "url": art["url"],
+                "source": art.get("source", {}).get("name", "")
+            })
+    return arts
 
 
-def montar_email(artigos: List[dict]) -> MIMEMultipart:
-    assunto = f"IA Global — {datetime.now().strftime('%d/%m/%Y')}"
+def ai_summarize(title: str, desc: str) -> dict:
+    """Use ChatGPT to translate title & craft 10‑line summary in Portuguese."""
+    prompt = (
+        "Você é um jornalista brasileiro. Resuma a notícia a seguir em português.\n"
+        "Título original: " + title + "\n"
+        "Descrição original: " + desc + "\n\n"
+        "Responda no formato:\n"
+        "TÍTULO: <título em até 120 caracteres>\n"
+        "RESUMO (10 linhas):\n<li>linha 1</li> ... <li>linha 10</li>"
+    )
+    chat = openai.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.7,
+    )
+    content = chat.choices[0].message.content.strip()
+    titulo_pt, *resumo_html = content.split("\n", 1)
+    titulo_pt = titulo_pt.replace("TÍTULO:", "").strip()
+    resumo_html = resumo_html[0] if resumo_html else ""
+    resumo_plain = "\n".join([re.sub(r"<[^>]+>", "", ln) for ln in resumo_html.split("\n")])
+    return {"titulo": titulo_pt, "resumo_html": resumo_html, "resumo_txt": resumo_plain}
+
+
+def build_email(items: List[dict]) -> MIMEMultipart:
+    subject = f"IA Global — {datetime.now().strftime('%d/%m/%Y')}"
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = assunto
+    msg["Subject"] = subject
     msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
 
-    # Corpo texto
-    txt_lines: List[str] = []
-    # Corpo HTML
-    html_parts: List[str] = ["<h1>📰 Manchetes Globais de IA (7 dias)</h1><ol>"]
+    txt_parts: List[str] = []
+    html_parts: List[str] = ["<h1>📰 Manchetes Globais de IA</h1><ol>"]
 
-    for art in artigos or [{"titulo": "Nenhuma notícia encontrada", "desc": "", "link": "", "fonte": ""}]:
-        tit_pt = _translate(art["titulo"])
-        desc_pt = _translate(art["desc"])
-        resumo = "\n".join(_split_sentences(desc_pt)[:10]) or "[sem descrição]"
-
-        txt_lines.append(f"{tit_pt} — {art['fonte']}\n{resumo}\nLink: {art['link']}\n")
-
+    for it in items:
+        txt_parts.append(f"{it['titulo']}\n{it['resumo_txt']}\nLink: {it['url']}\n")
         html_parts.append(
-            f"<li><strong>{tit_pt}</strong><br>" +
-            "<br>".join(_split_sentences(desc_pt)[:10]) + "<br>" +
-            (f"<a href='{art['link']}'>{art['link']}</a>" if art['link'] else "") +
-            "</li>"
+            f"<li><strong>{it['titulo']}</strong><br>{it['resumo_html']}<br>"
+            f"<a href='{it['url']}'>{it['url']}</a></li>"
         )
 
-    html_parts.append(
-        "</ol><p style='font-size:0.8em;color:#666'>Enviado automaticamente via GitHub Actions.</p>"
-    )
+    html_parts.append("</ol><p style='font-size:0.8em;color:#666'>Enviado via GitHub Actions + OpenAI API.</p>")
 
-    msg.attach(MIMEText("\n".join(txt_lines), "plain", "utf-8"))
+    msg.attach(MIMEText("\n".join(txt_parts), "plain", "utf-8"))
     msg.attach(MIMEText("".join(html_parts), "html", "utf-8"))
     return msg
 
 
-def enviar_email(m: MIMEMultipart) -> None:
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
-        s.login(EMAIL_FROM, EMAIL_PASSWORD)
-        s.sendmail(EMAIL_FROM, [EMAIL_TO], m.as_string())
+def send(msg: MIMEMultipart) -> None:
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+        smtp.login(EMAIL_FROM, EMAIL_PASSWORD)
+        smtp.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
 
-# ───── Main ─────
+# ───────── Main ─────────
 
 def main() -> None:
     try:
-        artigos = buscar_artigos()
-        email_msg = montar_email(artigos)
-        enviar_email(email_msg)
-        print("E-mail enviado com sucesso.")
+        arts = fetch_articles()
+        summaries = []
+        for art in arts:
+            ai = ai_summarize(art["title"], art["description"])
+            summaries.append({**art, **ai})
+        email_msg = build_email(summaries)
+        send(email_msg)
+        print("E‑mail enviado com sucesso.")
     except Exception as exc:
         sys.stderr.write(f"Erro: {exc}\n")
         sys.exit(1)
