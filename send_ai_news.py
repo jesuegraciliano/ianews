@@ -54,7 +54,7 @@ if missing:
 def buscar_noticias() -> List[str]:
     """Retorna até MAX_ARTIGOS strings formatadas."""
     hoje = datetime.now(timezone.utc).date()
-    anteontem = hoje - timedelta(days=2)
+    anteontem = hoje - timedelta(days=4)
     url = (
         "https://newsapi.org/v2/everything?"
         f"q={QUERY}&"
