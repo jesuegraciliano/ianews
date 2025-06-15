@@ -11,22 +11,26 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repositório
+        uses: actions/checkout@v4
 
-      - name: Set up Python 3.13 (requerido pela OpenAI)
+      - name: Set up Python 3.12 (requerido pela CrewAI)
         uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: '3.12'
 
-      - name: Install basic dependencies
-        run: pip install requests openai
-
-      - name: Install full dependencies (CrewAI etc.)
+      - name: Instalar dependências
         run: |
-          pip install crewai==0.28.8 crewai_tools==0.1.6 \
-                      langchain_community==0.0.29 openai serperdev requests
+          pip install --upgrade pip
+          pip install \
+            crewai==0.28.8 \
+            crewai_tools==0.1.6 \
+            langchain_community==0.0.29 \
+            openai \
+            serperdev \
+            requests
 
-      - name: Run AI news pipeline
+      - name: Executar pipeline de notícias com agentes IA
         env:
           NEWS_API_KEY:   ${{ secrets.NEWS_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
