@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
-Pipeline semanal de geração de artigo sobre IA com agentes CrewAI
+Versão leve do pipeline IA para teste de performance
 """
 
-from __future__ import annotations
 import os
 import smtplib
 import sys
@@ -13,15 +12,12 @@ from email.mime.text import MIMEText
 from typing import List, Dict
 
 import requests
-from crewai_tools import SerperDevTool, ScrapeWebsiteTool
 from crewai import Agent, Task, Crew
 from langchain_openai import ChatOpenAI
 
-# ──────────── Validação de variáveis de ambiente ────────────
 ENV = {
     "NEWS_API_KEY": os.getenv("NEWS_API_KEY"),
     "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-    "SERPER_API_KEY": os.getenv("SERPER_API_KEY"),
     "EMAIL_FROM": os.getenv("EMAIL_FROM"),
     "EMAIL_PASSWORD": os.getenv("EMAIL_PASSWORD"),
 }
@@ -32,13 +28,13 @@ if missing:
 
 EMAIL_TO = os.getenv("EMAIL_TO", ENV["EMAIL_FROM"])
 
-# ──────────── 1. Coleta de manchetes ────────────
-HEADERS = {"User-Agent": "IA-Agents-Pipeline/1.0"}
+# Coleta simplificada de manchetes
+HEADERS = {"User-Agent": "IA-Agents-Light/1.0"}
 QUERY = '"Artificial Intelligence"'
-MAX_ARTIGOS = 3  # reduzido para acelerar a execução
+MAX_ARTIGOS = 3
 
 def fetch_ai_headlines() -> List[Dict]:
-    print("🌐 Buscando manchetes de IA na NewsAPI...")
+    print("🌐 Buscando manchetes da NewsAPI (versão leve)...")
     today = datetime.now(timezone.utc).date()
     week_ago = today - timedelta(days=7)
     url = (
@@ -49,68 +45,66 @@ def fetch_ai_headlines() -> List[Dict]:
     data = requests.get(url, headers=HEADERS, timeout=30).json()
     if data.get("status") != "ok":
         raise RuntimeError(data.get("message", "Erro na NewsAPI"))
-    headlines = []
-    for art in data.get("articles", []):
-        if len(headlines) == MAX_ARTIGOS:
-            break
-        if art.get("title") and art.get("url"):
-            headlines.append({"title": art["title"], "url": art["url"]})
+    headlines = [
+        {"title": art["title"], "url": art["url"]}
+        for art in data.get("articles", [])
+        if art.get("title") and art.get("url")
+    ][:MAX_ARTIGOS]
     print(f"✅ Manchetes coletadas: {len(headlines)}")
     return headlines
 
-# ──────────── 2. Agentes e tarefas CrewAI ────────────
+# Agentes e tarefas com LLM
 llm = ChatOpenAI(model="gpt-4o-mini", api_key=ENV["OPENAI_API_KEY"])
-search_tool = SerperDevTool()
-scrape_tool = ScrapeWebsiteTool()
 
 planejador = Agent(
     role="Planejador de Conteúdo",
-    goal="Criar um esboço conciso sobre Inteligência Artificial baseado nas manchetes",
-    backstory="Você prepara a pauta para um artigo semanal sobre IA.",
+    goal="Criar um esboço com base nas manchetes fornecidas",
+    backstory="Você é responsável por organizar a estrutura do artigo semanal.",
     verbose=False,
-    tools=[search_tool, scrape_tool],
+    tools=[],  # ferramentas removidas
     llm=llm,
 )
 
 redator = Agent(
     role="Redator de Conteúdo",
-    goal="Escrever artigo em português, objetivo e interessante",
-    backstory="Você transforma o esboço em um artigo markdown.",
+    goal="Escrever um artigo informativo em português a partir do esboço",
+    backstory="Você transforma o esboço em um artigo completo em markdown.",
     verbose=False,
-    tools=[search_tool, scrape_tool],
+    tools=[],  # ferramentas removidas
     llm=llm,
 )
 
 editor = Agent(
     role="Editor",
-    goal="Garantir clareza, correção gramatical e foco em IA",
-    backstory="Você revisa e finaliza o texto.",
+    goal="Revisar o conteúdo final para clareza e foco",
+    backstory="Você faz a revisão final do texto.",
     verbose=False,
-    tools=[],
+    tools=[],  # ferramentas removidas
     llm=llm,
 )
 
+# Tarefas
 planejamento_task = Task(
-    description="Crie um esboço detalhado (markdown) para um artigo sobre IA.",
-    expected_output="Esboço markdown com seções.",
+    description="Crie um esboço em markdown com base nas manchetes.",
+    expected_output="Esboço estruturado",
     agent=planejador,
 )
 
 escrita_task = Task(
-    description="Escreva o artigo (markdown) com introdução, 3 seções e conclusão.",
-    expected_output="Artigo completo markdown.",
+    description="Escreva o artigo final em português com introdução, seções e conclusão.",
+    expected_output="Artigo markdown finalizado",
     agent=redator,
 )
 
 edicao_task = Task(
-    description="Revise o artigo garantindo foco em IA e clareza.",
-    expected_output="Artigo final markdown revisado.",
+    description="Revise o artigo garantindo clareza, gramática e foco em IA.",
+    expected_output="Versão final do artigo em markdown",
     agent=editor,
 )
 
 def generate_article(headlines: List[Dict]) -> str:
     context = "\n".join([f"- {h['title']} ({h['url']})" for h in headlines]) or "Nenhuma manchete"
-    print("🧠 Iniciando geração do artigo com agentes da CrewAI...")
+    print("🧠 Iniciando geração do artigo (sem scraping)...")
     crew = Crew(
         agents=[planejador, redator, editor],
         tasks=[planejamento_task, escrita_task, edicao_task],
@@ -120,11 +114,10 @@ def generate_article(headlines: List[Dict]) -> str:
     print("📄 Artigo gerado com sucesso!")
     return result
 
-# ──────────── 3. Envio de e-mail ────────────
 def send_email(markdown_body: str) -> None:
     print(f"📬 Enviando e-mail para {EMAIL_TO}...")
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Artigo Semanal sobre IA — {datetime.now().strftime('%d/%m/%Y')}"
+    msg["Subject"] = f"Artigo IA (teste leve) — {datetime.now().strftime('%d/%m/%Y')}"
     msg["From"] = ENV["EMAIL_FROM"]
     msg["To"] = EMAIL_TO
 
@@ -136,14 +129,14 @@ def send_email(markdown_body: str) -> None:
         smtp.sendmail(ENV["EMAIL_FROM"], [EMAIL_TO], msg.as_string())
     print("✅ E-mail enviado com sucesso!")
 
-# ──────────── Execução principal ────────────
+# Execução principal
 if __name__ == "__main__":
     try:
-        print("🚀 Iniciando pipeline de geração de artigo sobre IA...")
+        print("🚀 Iniciando pipeline leve de teste...")
         manchetes = fetch_ai_headlines()
-        article_md = generate_article(manchetes)
-        send_email(article_md)
-        print("🏁 Pipeline concluído com sucesso!")
-    except Exception as err:
-        print(f"❌ Erro durante o pipeline: {err}")
+        artigo = generate_article(manchetes)
+        send_email(artigo)
+        print("🏁 Pipeline leve concluído com sucesso.")
+    except Exception as e:
+        print(f"❌ Erro: {e}")
         sys.exit(1)
