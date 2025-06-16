@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Versão leve do pipeline IA para teste de performance
+Gera resumo diário sobre IA com base em manchetes da NewsAPI
+e envia e‑mail com resumo em português via OpenAI.
 """
 
 import os
@@ -9,134 +10,114 @@ import sys
 from datetime import datetime, timedelta, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import List, Dict
-
+from typing import List
 import requests
-from crewai import Agent, Task, Crew
-from langchain_openai import ChatOpenAI
+import openai
 
-ENV = {
-    "NEWS_API_KEY": os.getenv("NEWS_API_KEY"),
-    "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-    "EMAIL_FROM": os.getenv("EMAIL_FROM"),
-    "EMAIL_PASSWORD": os.getenv("EMAIL_PASSWORD"),
+# Variáveis obrigatórias
+NEWS_API_KEY   = os.getenv("NEWS_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+EMAIL_FROM     = os.getenv("EMAIL_FROM")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+EMAIL_TO       = os.getenv("EMAIL_TO", EMAIL_FROM or "")
+MAX_ARTIGOS    = 5
+
+# Validação
+required = {
+    "NEWS_API_KEY": NEWS_API_KEY,
+    "OPENAI_API_KEY": OPENAI_API_KEY,
+    "EMAIL_FROM": EMAIL_FROM,
+    "EMAIL_PASSWORD": EMAIL_PASSWORD,
 }
-missing = [k for k, v in ENV.items() if not v]
+missing = [k for k, v in required.items() if not v]
 if missing:
-    sys.stderr.write("Variáveis ausentes: " + ", ".join(missing) + "\n")
+    sys.stderr.write("Faltam variáveis: " + ", ".join(missing) + "\n")
     sys.exit(1)
 
-EMAIL_TO = os.getenv("EMAIL_TO", ENV["EMAIL_FROM"])
+openai.api_key = OPENAI_API_KEY
+MODEL = "gpt-4o"
+HEADERS = {"User-Agent": "IA-Resumo-Agent/1.0"}
+QUERY = '"inteligência artificial" OR "IA" OR "AI"'
 
-# Coleta simplificada de manchetes
-HEADERS = {"User-Agent": "IA-Agents-Light/1.0"}
-QUERY = '"Artificial Intelligence"'
-MAX_ARTIGOS = 3
-
-def fetch_ai_headlines() -> List[Dict]:
-    print("🌐 Buscando manchetes da NewsAPI (versão leve)...")
-    today = datetime.now(timezone.utc).date()
-    week_ago = today - timedelta(days=7)
+def buscar_manchetes() -> List[dict]:
+    hoje = datetime.now(timezone.utc).date()
+    semana = hoje - timedelta(days=7)
     url = (
-        "https://newsapi.org/v2/everything?q=" + QUERY +
-        f"&from={week_ago.isoformat()}&sortBy=publishedAt&language=en&"
-        f"pageSize=100&apiKey={ENV['NEWS_API_KEY']}"
+        f"https://newsapi.org/v2/everything?q={QUERY}&from={semana}&sortBy=publishedAt"
+        f"&language=en&pageSize=20&apiKey={NEWS_API_KEY}"
     )
     data = requests.get(url, headers=HEADERS, timeout=30).json()
     if data.get("status") != "ok":
         raise RuntimeError(data.get("message", "Erro na NewsAPI"))
-    headlines = [
-        {"title": art["title"], "url": art["url"]}
+    artigos = [
+        {
+            "title": art["title"],
+            "description": art.get("description", ""),
+            "url": art["url"],
+        }
         for art in data.get("articles", [])
         if art.get("title") and art.get("url")
-    ][:MAX_ARTIGOS]
-    print(f"✅ Manchetes coletadas: {len(headlines)}")
-    return headlines
+    ]
+    return artigos[:MAX_ARTIGOS]
 
-# Agentes e tarefas com LLM
-llm = ChatOpenAI(model="gpt-4o-mini", api_key=ENV["OPENAI_API_KEY"])
-
-planejador = Agent(
-    role="Planejador de Conteúdo",
-    goal="Criar um esboço com base nas manchetes fornecidas",
-    backstory="Você é responsável por organizar a estrutura do artigo semanal.",
-    verbose=False,
-    tools=[],  # ferramentas removidas
-    llm=llm,
-)
-
-redator = Agent(
-    role="Redator de Conteúdo",
-    goal="Escrever um artigo informativo em português a partir do esboço",
-    backstory="Você transforma o esboço em um artigo completo em markdown.",
-    verbose=False,
-    tools=[],  # ferramentas removidas
-    llm=llm,
-)
-
-editor = Agent(
-    role="Editor",
-    goal="Revisar o conteúdo final para clareza e foco",
-    backstory="Você faz a revisão final do texto.",
-    verbose=False,
-    tools=[],  # ferramentas removidas
-    llm=llm,
-)
-
-# Tarefas
-planejamento_task = Task(
-    description="Crie um esboço em markdown com base nas manchetes.",
-    expected_output="Esboço estruturado",
-    agent=planejador,
-)
-
-escrita_task = Task(
-    description="Escreva o artigo final em português com introdução, seções e conclusão.",
-    expected_output="Artigo markdown finalizado",
-    agent=redator,
-)
-
-edicao_task = Task(
-    description="Revise o artigo garantindo clareza, gramática e foco em IA.",
-    expected_output="Versão final do artigo em markdown",
-    agent=editor,
-)
-
-def generate_article(headlines: List[Dict]) -> str:
-    context = "\n".join([f"- {h['title']} ({h['url']})" for h in headlines]) or "Nenhuma manchete"
-    print("🧠 Iniciando geração do artigo (sem scraping)...")
-    crew = Crew(
-        agents=[planejador, redator, editor],
-        tasks=[planejamento_task, escrita_task, edicao_task],
-        verbose=2,
+def gerar_resumo(titulo: str, descricao: str) -> dict:
+    prompt = (
+        f"Traduza o título abaixo para o português (máx 120 caracteres). Em seguida, escreva um resumo "
+        f"em exatamente 5 frases claras sobre o conteúdo da notícia.\n\n"
+        f"TÍTULO ORIGINAL: {titulo}\nDESCRIÇÃO: {descricao}"
     )
-    result = crew.kickoff(inputs={"tópico": "Artificial Intelligence", "manchetes": context})
-    print("📄 Artigo gerado com sucesso!")
-    return result
+    chat = openai.chat.completions.create(
+        model=MODEL,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5,
+    )
+    resposta = chat.choices[0].message.content.strip()
+    partes = resposta.split("\n", 1)
+    titulo_pt = partes[0].strip("•- ")
+    resumo = partes[1] if len(partes) > 1 else ""
+    return {
+        "titulo": titulo_pt,
+        "resumo": resumo.replace("\n", "<br>"),
+        "resumo_txt": resumo.replace("<br>", "\n")
+    }
 
-def send_email(markdown_body: str) -> None:
-    print(f"📬 Enviando e-mail para {EMAIL_TO}...")
+def montar_email(itens: List[dict]) -> MIMEMultipart:
+    assunto = f"Resumo de IA — {datetime.now().strftime('%d/%m/%Y')}"
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"Artigo IA (teste leve) — {datetime.now().strftime('%d/%m/%Y')}"
-    msg["From"] = ENV["EMAIL_FROM"]
+    msg["Subject"] = assunto
+    msg["From"] = EMAIL_FROM
     msg["To"] = EMAIL_TO
 
-    msg.attach(MIMEText(markdown_body, "plain", "utf-8"))
-    msg.attach(MIMEText(markdown_body.replace("\n", "<br>"), "html", "utf-8"))
+    txt: List[str] = []
+    html: List[str] = ["<h1>📰 Resumo de Notícias sobre IA</h1><ol>"]
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-        smtp.login(ENV["EMAIL_FROM"], ENV["EMAIL_PASSWORD"])
-        smtp.sendmail(ENV["EMAIL_FROM"], [EMAIL_TO], msg.as_string())
-    print("✅ E-mail enviado com sucesso!")
+    for it in itens:
+        txt.append(f"{it['titulo']}\n{it['resumo_txt']}\nLink: {it['url']}\n")
+        html.append(
+            f"<li><strong>{it['titulo']}</strong><br>{it['resumo']}<br>"
+            f"<a href='{it['url']}'>{it['url']}</a></li>"
+        )
 
-# Execução principal
-if __name__ == "__main__":
+    html.append("</ol><p style='font-size:0.8em;color:#666'>Enviado via OpenAI + GitHub Actions</p>")
+    msg.attach(MIMEText("\n".join(txt), "plain", "utf-8"))
+    msg.attach(MIMEText("".join(html), "html", "utf-8"))
+    return msg
+
+def enviar_email(msg: MIMEMultipart) -> None:
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
+        s.login(EMAIL_FROM, EMAIL_PASSWORD)
+        s.sendmail(EMAIL_FROM, [EMAIL_TO], msg.as_string())
+
+def main():
     try:
-        print("🚀 Iniciando pipeline leve de teste...")
-        manchetes = fetch_ai_headlines()
-        artigo = generate_article(manchetes)
-        send_email(artigo)
-        print("🏁 Pipeline leve concluído com sucesso.")
+        artigos = buscar_manchetes()
+        enriquecido = [{**a, **gerar_resumo(a["title"], a["description"])} for a in artigos]
+        email = montar_email(enriquecido)
+        enviar_email(email)
+        print("✅ E-mail enviado com sucesso.")
     except Exception as e:
         print(f"❌ Erro: {e}")
         sys.exit(1)
+
+if __name__ == "__main__":
+    main()
