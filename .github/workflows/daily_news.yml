@@ -1,4 +1,4 @@
-name: Daily AI News
+name: Daily AI News (Versão Leve)
 
 on:
   schedule:
@@ -14,27 +14,26 @@ jobs:
       - name: Checkout repositório
         uses: actions/checkout@v4
 
-      - name: Set up Python 3.12 (requerido pela CrewAI)
+      - name: Set up Python 3.12 (recomendado para CrewAI)
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: Instalar dependências
+      - name: Instalar dependências mínimas
         run: |
           pip install --upgrade pip
           pip install \
             crewai==0.28.8 \
-            crewai_tools==0.1.6 \
             langchain_community==0.0.29 \
+            crewai_tools==0.1.6 \
             openai \
             requests
 
-      - name: Executar pipeline de notícias com agentes IA
+      - name: Executar versão leve do pipeline IA
         env:
           NEWS_API_KEY:   ${{ secrets.NEWS_API_KEY }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
           EMAIL_FROM:     ${{ secrets.EMAIL_FROM }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_TO:       ${{ secrets.EMAIL_TO }}
-        run: python ai_news_agents_email_pipeline.py
+        run: python ai_news_agents_email_pipeline_light.py
